@@ -1,0 +1,119 @@
+name: Build pico-serprog UF2 final-patched
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - stable-4096
+          - benchmark-8192
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential git python3
+
+      - name: Patch missing header include
+        run: |
+          if ! grep -q '^#include <string.h>$' usb_descriptors.c; then
+            sed -i '1i #include <string.h>' usb_descriptors.c
+          fi
+
+      - name: Select source variant
+        run: |
+          if [ "${{ matrix.variant }}" = "benchmark-8192" ]; then
+            cp variants/main_benchmark_8192.c main.c
+          fi
+
+      - name: Fix serprog command bitmap
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('main.c')
+          s = p.read_text()
+          old = '''            static const uint32_t cmdmap[8] = {
+                (1u << S_CMD_NOP) |
+                (1u << S_CMD_Q_IFACE) |
+                (1u << S_CMD_Q_CMDMAP) |
+                (1u << S_CMD_Q_PGMNAME) |
+                (1u << S_CMD_Q_SERBUF) |
+                (1u << S_CMD_Q_BUSTYPE) |
+                (1u << S_CMD_Q_OPBUF),
+                (1u << (S_CMD_Q_WRNMAXLEN - 32)) |
+                (1u << (S_CMD_R_BYTE - 32)) |
+                (1u << (S_CMD_R_NBYTES - 32)) |
+                (1u << (S_CMD_O_INIT - 32)) |
+                (1u << (S_CMD_O_WRITEB - 32)) |
+                (1u << (S_CMD_O_EXEC - 32)) |
+                (1u << (S_CMD_SYNCNOP - 32)) |
+                (1u << (S_CMD_Q_RDNMAXLEN - 32)),
+                (1u << (S_CMD_S_BUSTYPE - 64)) |
+                (1u << (S_CMD_O_SPIOP - 64)) |
+                (1u << (S_CMD_S_SPI_FREQ - 64)) |
+                (1u << (S_CMD_S_PIN_STATE - 64)),
+                0, 0, 0, 0, 0
+            };'''
+          new = '''            static const uint32_t cmdmap[8] = {
+                (1u << S_CMD_NOP) |
+                (1u << S_CMD_Q_IFACE) |
+                (1u << S_CMD_Q_CMDMAP) |
+                (1u << S_CMD_Q_PGMNAME) |
+                (1u << S_CMD_Q_SERBUF) |
+                (1u << S_CMD_Q_BUSTYPE) |
+                (1u << S_CMD_Q_OPBUF) |
+                (1u << S_CMD_Q_WRNMAXLEN) |
+                (1u << S_CMD_R_BYTE) |
+                (1u << S_CMD_R_NBYTES) |
+                (1u << S_CMD_O_INIT) |
+                (1u << S_CMD_O_WRITEB) |
+                (1u << S_CMD_O_EXEC) |
+                (1u << S_CMD_SYNCNOP) |
+                (1u << S_CMD_Q_RDNMAXLEN) |
+                (1u << S_CMD_S_BUSTYPE) |
+                (1u << S_CMD_O_SPIOP) |
+                (1u << S_CMD_S_SPI_FREQ) |
+                (1u << S_CMD_S_PIN_STATE),
+                0, 0, 0, 0, 0, 0, 0
+            };'''
+          if old not in s:
+              raise SystemExit('cmdmap block not found in main.c')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Configure CMake
+        env:
+          PICO_SDK_FETCH_FROM_GIT: "1"
+        run: |
+          cmake -B build -S . -G Ninja
+
+      - name: Build UF2 with full log
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build -- -j1 -v 2>&1 | tee build.log
+
+      - name: Collect outputs
+        if: always()
+        run: |
+          mkdir -p out
+          if [ -f build/pico_serprog.uf2 ]; then cp build/pico_serprog.uf2 out/pico_serprog-${{ matrix.variant }}.uf2; fi
+          if [ -f build/pico_serprog.elf ]; then cp build/pico_serprog.elf out/pico_serprog-${{ matrix.variant }}.elf; fi
+          if [ -f build/pico_serprog.bin ]; then cp build/pico_serprog.bin out/pico_serprog-${{ matrix.variant }}.bin; fi
+          if [ -f build.log ]; then cp build.log out/build-${{ matrix.variant }}.log; fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pico-serprog-final-${{ matrix.variant }}
+          path: out/*
