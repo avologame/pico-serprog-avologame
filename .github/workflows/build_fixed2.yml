@@ -1,0 +1,58 @@
+name: Build pico-serprog UF2 patched
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - stable-4096
+          - benchmark-8192
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential git python3
+
+      - name: Patch missing header include
+        run: |
+          if ! grep -q '^#include <string.h>$' usb_descriptors.c; then
+            sed -i '1i #include <string.h>' usb_descriptors.c
+          fi
+
+      - name: Select source variant
+        run: |
+          if [ "${{ matrix.variant }}" = "benchmark-8192" ]; then
+            cp variants/main_benchmark_8192.c main.c
+          fi
+
+      - name: Configure CMake
+        env:
+          PICO_SDK_FETCH_FROM_GIT: "1"
+        run: |
+          cmake -B build -S . -G Ninja
+
+      - name: Build UF2
+        run: |
+          cmake --build build --verbose
+
+      - name: Rename artifacts
+        run: |
+          mkdir -p out
+          cp build/pico_serprog.uf2 out/pico_serprog-${{ matrix.variant }}.uf2
+          cp build/pico_serprog.elf out/pico_serprog-${{ matrix.variant }}.elf
+          cp build/pico_serprog.bin out/pico_serprog-${{ matrix.variant }}.bin
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pico-serprog-${{ matrix.variant }}
+          path: out/*
